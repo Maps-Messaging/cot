@@ -35,6 +35,9 @@ CotStreamDecoder decoder = new CotStreamDecoder(1024 * 1024);
 List<byte[]> events = decoder.accept(networkBytes);
 ```
 
+See [API.md](API.md) for the complete public API, stream lifecycle, failure contracts,
+thread-safety and integration examples.
+
 Validation uses the bundled public-release base schema. The schema intentionally accepts
 application-specific elements inside `<detail>` using lax processing.
 
