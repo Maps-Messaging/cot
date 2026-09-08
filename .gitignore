@@ -1,0 +1,14 @@
+# Compiled output
+target/
+*.class
+
+# IDE metadata
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+
+# Runtime files
+*.log
+hs_err_pid*
