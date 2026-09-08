@@ -17,21 +17,38 @@
  */
 package io.mapsmessaging.cot;
 
+import static io.mapsmessaging.cot.CotLogMessages.COT_STREAM_EVENT_OVERSIZED;
+import static io.mapsmessaging.cot.CotLogMessages.COT_STREAM_RESYNCHRONISED;
+
+import io.mapsmessaging.logging.Logger;
+import io.mapsmessaging.logging.LoggerFactory;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Deque;
 import java.util.List;
 
 /** Incrementally extracts legacy XML CoT events from a byte stream. */
 public final class CotStreamDecoder {
 
   private static final byte[] START = "<event".getBytes(StandardCharsets.US_ASCII);
-  private static final byte[] END = "</event>".getBytes(StandardCharsets.US_ASCII);
+  private static final Logger LOGGER = LoggerFactory.getLogger(CotStreamDecoder.class);
 
   private final int maximumEventSize;
-  private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+  private final ByteArrayOutputStream eventBuffer = new ByteArrayOutputStream();
+  private final StringBuilder tagName = new StringBuilder();
+  private final StringBuilder declarationPrefix = new StringBuilder();
+  private final Deque<String> elementStack = new ArrayDeque<>();
+
+  private State state = State.SEARCHING;
+  private int startMatch;
+  private int terminatorMatch;
+  private int tagStartOffset;
+  private boolean closingTag;
+  private boolean selfClosing;
+  private byte quote;
 
   public CotStreamDecoder(int maximumEventSize) {
     if (maximumEventSize < 256) {
@@ -44,70 +61,263 @@ public final class CotStreamDecoder {
     if (input == null || input.length == 0) {
       return List.of();
     }
-    buffer.write(input);
-    byte[] data = buffer.toByteArray();
     List<byte[]> frames = new ArrayList<>();
-    int consumed = 0;
-    while (true) {
-      int start = indexOf(data, START, consumed);
-      if (start < 0) {
-        retainPossibleStart(data);
-        return frames;
+    for (byte value : input) {
+      if (state == State.SEARCHING) {
+        searchForEvent(value);
+      } else if (state == State.START_BOUNDARY) {
+        acceptStartBoundary(value, frames);
+      } else {
+        append(value);
+        processEventByte(value, frames);
       }
-      int end = indexOf(data, END, start + START.length);
-      if (end < 0) {
-        if (data.length - start > maximumEventSize) {
-          buffer.reset();
-          throw new IOException("CoT event exceeds " + maximumEventSize + " bytes");
+    }
+    return List.copyOf(frames);
+  }
+
+  private void searchForEvent(byte value) {
+    if (value == START[startMatch]) {
+      startMatch++;
+      if (startMatch == START.length) {
+        state = State.START_BOUNDARY;
+      }
+      return;
+    }
+    startMatch = value == START[0] ? 1 : 0;
+  }
+
+  private void acceptStartBoundary(byte value, List<byte[]> frames) throws IOException {
+    if (!isNameBoundary(value)) {
+      state = State.SEARCHING;
+      startMatch = value == START[0] ? 1 : 0;
+      return;
+    }
+    eventBuffer.reset();
+    eventBuffer.writeBytes(START);
+    append(value);
+    elementStack.clear();
+    tagName.setLength(0);
+    tagName.append("event");
+    tagStartOffset = 0;
+    closingTag = false;
+    selfClosing = false;
+    quote = 0;
+    state = State.TAG;
+    processTagByte(value, frames);
+  }
+
+  private void processEventByte(byte value, List<byte[]> frames) {
+    switch (state) {
+      case TEXT -> {
+        if (value == '<') {
+          tagStartOffset = eventBuffer.size() - 1;
+          state = State.AFTER_LESS_THAN;
         }
-        replaceBuffer(data, start, data.length);
-        return frames;
       }
-      int frameEnd = end + END.length;
-      if (frameEnd - start > maximumEventSize) {
-        buffer.reset();
-        throw new IOException("CoT event exceeds " + maximumEventSize + " bytes");
-      }
-      frames.add(Arrays.copyOfRange(data, start, frameEnd));
-      consumed = frameEnd;
-      if (consumed == data.length) {
-        buffer.reset();
-        return frames;
-      }
+      case AFTER_LESS_THAN -> processAfterLessThan(value);
+      case TAG_NAME -> processTagNameByte(value, frames);
+      case TAG -> processTagByte(value, frames);
+      case DECLARATION_PREFIX -> processDeclarationPrefix(value);
+      case COMMENT -> processTerminator(value, "-->", State.TEXT);
+      case CDATA -> processTerminator(value, "]]>", State.TEXT);
+      case PROCESSING_INSTRUCTION -> processTerminator(value, "?>", State.TEXT);
+      case DECLARATION -> processDeclarationByte(value);
+      default -> throw new IllegalStateException("Unexpected CoT decoder state " + state);
     }
   }
 
-  private void retainPossibleStart(byte[] data) {
-    int keep = 0;
-    for (int length = Math.min(START.length - 1, data.length); length > 0; length--) {
-      if (matches(data, data.length - length, START, length)) {
-        keep = length;
-        break;
-      }
+  private void processAfterLessThan(byte value) {
+    tagName.setLength(0);
+    closingTag = false;
+    selfClosing = false;
+    quote = 0;
+    if (value == '/') {
+      closingTag = true;
+      state = State.TAG_NAME;
+    } else if (value == '?') {
+      terminatorMatch = 0;
+      state = State.PROCESSING_INSTRUCTION;
+    } else if (value == '!') {
+      declarationPrefix.setLength(0);
+      state = State.DECLARATION_PREFIX;
+    } else {
+      tagName.append((char) (value & 0xff));
+      state = State.TAG_NAME;
     }
-    replaceBuffer(data, data.length - keep, data.length);
   }
 
-  private void replaceBuffer(byte[] data, int start, int end) {
-    buffer.reset();
-    buffer.write(data, start, end - start);
+  private void processTagNameByte(byte value, List<byte[]> frames) {
+    if (!isNameBoundary(value)) {
+      tagName.append((char) (value & 0xff));
+      return;
+    }
+    state = State.TAG;
+    processTagByte(value, frames);
   }
 
-  private static int indexOf(byte[] data, byte[] target, int from) {
-    for (int index = from; index <= data.length - target.length; index++) {
-      if (matches(data, index, target, target.length)) {
-        return index;
+  private void processTagByte(byte value, List<byte[]> frames) {
+    if (quote != 0) {
+      if (value == quote) {
+        quote = 0;
       }
+      return;
     }
-    return -1;
+    if (value == '\'' || value == '"') {
+      quote = value;
+    } else if (value == '/') {
+      selfClosing = true;
+    } else if (value == '>') {
+      completeTag(frames);
+    } else if (!isWhitespace(value)) {
+      selfClosing = false;
+    }
   }
 
-  private static boolean matches(byte[] data, int offset, byte[] target, int length) {
-    for (int index = 0; index < length; index++) {
-      if (data[offset + index] != target[index]) {
-        return false;
+  private void completeTag(List<byte[]> frames) {
+    String name = tagName.toString();
+    if (!closingTag && "event".equals(name) && isUnclosedRootOnly()) {
+      resynchroniseAtCurrentTag();
+      return;
+    }
+    if (closingTag) {
+      completeClosingTag(name, frames);
+    } else if (selfClosing) {
+      if (elementStack.isEmpty() && "event".equals(name)) {
+        completeFrame(frames);
+      } else {
+        state = State.TEXT;
+      }
+    } else {
+      elementStack.push(name);
+      state = State.TEXT;
+    }
+  }
+
+  private void completeClosingTag(String name, List<byte[]> frames) {
+    if ("event".equals(name) && isRootClosingTag()) {
+      completeFrame(frames);
+      return;
+    }
+    if (!elementStack.isEmpty() && name.equals(elementStack.peek())) {
+      elementStack.pop();
+    }
+    state = State.TEXT;
+  }
+
+  private boolean isUnclosedRootOnly() {
+    return elementStack.size() == 1 && "event".equals(elementStack.peek());
+  }
+
+  private boolean isRootClosingTag() {
+    if (!elementStack.contains("event")) {
+      return true;
+    }
+    int eventCount = 0;
+    for (String element : elementStack) {
+      if ("event".equals(element)) {
+        eventCount++;
       }
     }
-    return true;
+    return eventCount == 1;
+  }
+
+  private void resynchroniseAtCurrentTag() {
+    byte[] data = eventBuffer.toByteArray();
+    LOGGER.log(COT_STREAM_RESYNCHRONISED, tagStartOffset);
+    eventBuffer.reset();
+    eventBuffer.write(data, tagStartOffset, data.length - tagStartOffset);
+    elementStack.clear();
+    elementStack.push("event");
+    state = State.TEXT;
+  }
+
+  private void completeFrame(List<byte[]> frames) {
+    frames.add(eventBuffer.toByteArray());
+    reset();
+  }
+
+  private void processDeclarationPrefix(byte value) {
+    declarationPrefix.append((char) (value & 0xff));
+    String prefix = declarationPrefix.toString();
+    if ("--".equals(prefix)) {
+      terminatorMatch = 0;
+      state = State.COMMENT;
+    } else if ("[CDATA[".equals(prefix)) {
+      terminatorMatch = 0;
+      state = State.CDATA;
+    } else if (!"--".startsWith(prefix) && !"[CDATA[".startsWith(prefix)) {
+      quote = 0;
+      state = State.DECLARATION;
+      processDeclarationByte(value);
+    }
+  }
+
+  private void processDeclarationByte(byte value) {
+    if (quote != 0) {
+      if (value == quote) {
+        quote = 0;
+      }
+    } else if (value == '\'' || value == '"') {
+      quote = value;
+    } else if (value == '>') {
+      state = State.TEXT;
+    }
+  }
+
+  private void processTerminator(byte value, String terminator, State completedState) {
+    if (value == terminator.charAt(terminatorMatch)) {
+      terminatorMatch++;
+      if (terminatorMatch == terminator.length()) {
+        terminatorMatch = 0;
+        state = completedState;
+      }
+    } else {
+      terminatorMatch = value == terminator.charAt(0) ? 1 : 0;
+    }
+  }
+
+  private void append(byte value) throws IOException {
+    if (eventBuffer.size() >= maximumEventSize) {
+      LOGGER.log(COT_STREAM_EVENT_OVERSIZED, eventBuffer.size() + 1, maximumEventSize);
+      reset();
+      throw new IOException("CoT event exceeds " + maximumEventSize + " bytes");
+    }
+    eventBuffer.write(value);
+  }
+
+  private void reset() {
+    eventBuffer.reset();
+    tagName.setLength(0);
+    declarationPrefix.setLength(0);
+    elementStack.clear();
+    state = State.SEARCHING;
+    startMatch = 0;
+    terminatorMatch = 0;
+    tagStartOffset = 0;
+    closingTag = false;
+    selfClosing = false;
+    quote = 0;
+  }
+
+  private static boolean isNameBoundary(byte value) {
+    return isWhitespace(value) || value == '>' || value == '/';
+  }
+
+  private static boolean isWhitespace(byte value) {
+    return value == ' ' || value == '\t' || value == '\r' || value == '\n';
+  }
+
+  private enum State {
+    SEARCHING,
+    START_BOUNDARY,
+    TEXT,
+    AFTER_LESS_THAN,
+    TAG_NAME,
+    TAG,
+    DECLARATION_PREFIX,
+    COMMENT,
+    CDATA,
+    PROCESSING_INSTRUCTION,
+    DECLARATION
   }
 }

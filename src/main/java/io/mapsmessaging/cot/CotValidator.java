@@ -17,9 +17,14 @@
  */
 package io.mapsmessaging.cot;
 
+import static io.mapsmessaging.cot.CotLogMessages.COT_VALIDATION_FAILED;
+
+import io.mapsmessaging.logging.Logger;
+import io.mapsmessaging.logging.LoggerFactory;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.transform.dom.DOMSource;
@@ -29,7 +34,12 @@ import org.xml.sax.SAXException;
 /** Validates XML against the bundled CoT 2.0 base schema. */
 public final class CotValidator {
 
+  private static final Logger LOGGER = LoggerFactory.getLogger(CotValidator.class);
+
   public void validate(byte[] xml) throws IOException {
+    if (xml == null || xml.length == 0) {
+      throw new IOException("CoT XML cannot be empty");
+    }
     try {
       DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
       factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
@@ -40,13 +50,17 @@ public final class CotValidator {
       factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
       factory.setXIncludeAware(false);
       factory.setExpandEntityReferences(false);
-      validate(factory.newDocumentBuilder().parse(new ByteArrayInputStream(xml)));
+      factory.setNamespaceAware(true);
+      DocumentBuilder builder = factory.newDocumentBuilder();
+      builder.setErrorHandler(CotSaxErrorHandler.INSTANCE);
+      validate(builder.parse(new ByteArrayInputStream(xml)), xml.length);
     } catch (ParserConfigurationException | SAXException e) {
+      LOGGER.log(COT_VALIDATION_FAILED, e, xml.length, e.getMessage());
       throw new IOException("Invalid CoT 2.0 event", e);
     }
   }
 
-  void validate(Node document) throws IOException {
+  void validate(Node document, int byteLength) throws IOException {
     try {
       var validator = CotSchema.getInstance().newValidator();
       validator.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
@@ -54,6 +68,7 @@ public final class CotValidator {
       validator.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
       validator.validate(new DOMSource(document));
     } catch (SAXException e) {
+      LOGGER.log(COT_VALIDATION_FAILED, e, byteLength, e.getMessage());
       throw new IOException("Invalid CoT 2.0 event", e);
     }
   }

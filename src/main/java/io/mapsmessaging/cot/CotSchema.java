@@ -17,6 +17,12 @@
  */
 package io.mapsmessaging.cot;
 
+import static io.mapsmessaging.cot.CotLogMessages.COT_SCHEMA_LOADED;
+import static io.mapsmessaging.cot.CotLogMessages.COT_SCHEMA_LOADING;
+import static io.mapsmessaging.cot.CotLogMessages.COT_SCHEMA_LOAD_FAILED;
+
+import io.mapsmessaging.logging.Logger;
+import io.mapsmessaging.logging.LoggerFactory;
 import java.io.IOException;
 import java.io.InputStream;
 import javax.xml.XMLConstants;
@@ -29,6 +35,7 @@ import org.xml.sax.SAXException;
 public final class CotSchema {
 
   public static final String RESOURCE = "/io/mapsmessaging/cot/schema/Event.xsd";
+  private static final Logger LOGGER = LoggerFactory.getLogger(CotSchema.class);
 
   private static final class Holder {
     private static final Schema INSTANCE = loadSchema();
@@ -51,14 +58,18 @@ public final class CotSchema {
 
   private static Schema loadSchema() {
     SchemaFactory factory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
+    LOGGER.log(COT_SCHEMA_LOADING, RESOURCE);
     try {
       factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
       factory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
       factory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
       try (InputStream stream = openStream()) {
-        return factory.newSchema(new StreamSource(stream));
+        Schema schema = factory.newSchema(new StreamSource(stream));
+        LOGGER.log(COT_SCHEMA_LOADED, RESOURCE);
+        return schema;
       }
     } catch (SAXException | IOException e) {
+      LOGGER.log(COT_SCHEMA_LOAD_FAILED, e, RESOURCE, e.getMessage());
       throw new ExceptionInInitializerError(e);
     }
   }

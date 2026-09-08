@@ -17,6 +17,10 @@
  */
 package io.mapsmessaging.cot;
 
+import static io.mapsmessaging.cot.CotLogMessages.COT_PARSE_FAILED;
+
+import io.mapsmessaging.logging.Logger;
+import io.mapsmessaging.logging.LoggerFactory;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -25,6 +29,7 @@ import java.time.format.DateTimeParseException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 import org.w3c.dom.Document;
@@ -35,6 +40,7 @@ import org.xml.sax.SAXException;
 /** Secure parser for the CoT 2.0 base envelope. */
 public final class CotParser {
 
+  private static final Logger LOGGER = LoggerFactory.getLogger(CotParser.class);
   private final boolean validate;
   private final CotValidator validator = new CotValidator();
 
@@ -51,10 +57,11 @@ public final class CotParser {
       throw new IOException("CoT XML cannot be empty");
     }
     try {
-      Document document = newDocumentBuilderFactory().newDocumentBuilder()
-          .parse(new ByteArrayInputStream(xml));
+      DocumentBuilder builder = newDocumentBuilderFactory().newDocumentBuilder();
+      builder.setErrorHandler(CotSaxErrorHandler.INSTANCE);
+      Document document = builder.parse(new ByteArrayInputStream(xml));
       if (validate) {
-        validator.validate(document);
+        validator.validate(document, xml.length);
       }
       Element event = document.getDocumentElement();
       if (event == null || !"event".equals(event.getTagName())) {
@@ -80,6 +87,15 @@ public final class CotParser {
           directChild(event, "detail"),
           optional);
     } catch (ParserConfigurationException | SAXException e) {
+      LOGGER.log(COT_PARSE_FAILED, e, xml.length, e.getMessage());
+      throw new IOException("Unable to parse CoT XML", e);
+    } catch (IOException e) {
+      if (!(e.getCause() instanceof SAXException)) {
+        LOGGER.log(COT_PARSE_FAILED, e, xml.length, e.getMessage());
+      }
+      throw e;
+    } catch (RuntimeException e) {
+      LOGGER.log(COT_PARSE_FAILED, e, xml.length, e.getMessage());
       throw new IOException("Unable to parse CoT XML", e);
     }
   }
@@ -103,6 +119,7 @@ public final class CotParser {
     factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
     factory.setXIncludeAware(false);
     factory.setExpandEntityReferences(false);
+    factory.setNamespaceAware(true);
     return factory;
   }
 

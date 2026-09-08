@@ -5,7 +5,7 @@ steps:
       - export NVD_API_KEY=$(buildkite-agent secret get nvd_api_key)
       - java -version
       - mvn -Dgpg.skip=true clean deploy -Psnapshot
-      - mvn sonar:sonar -Dsonar.login=${SONAR_TOKEN}
+      - mvn sonar:sonar -Psnapshot -Dsonar.login=${SONAR_TOKEN}
     plugins:
       - test-collector#v1.0.0:
           files: "target/surefire-reports/*.xml"

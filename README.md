@@ -9,7 +9,9 @@ The library provides:
 - secure parsing of the CoT event envelope and point;
 - preservation of application-specific `<detail>` extensions;
 - incremental framing of CoT XML from TCP and TLS streams; and
-- encoding for legacy TAK XML streaming connections.
+- encoding for legacy TAK XML streaming connections;
+- bounded recovery from corrupt and incomplete stream events; and
+- structured MapsMessaging log events for schema, validation, parsing and stream failures.
 
 It deliberately contains no socket, broker, session, or MapsMessaging server code.
 
@@ -35,6 +37,30 @@ List<byte[]> events = decoder.accept(networkBytes);
 
 Validation uses the bundled public-release base schema. The schema intentionally accepts
 application-specific elements inside `<detail>` using lax processing.
+
+## Build and verification
+
+Snapshot builds use the current MapsMessaging logging snapshot:
+
+```shell
+mvn clean verify -Psnapshot
+```
+
+The verification phase enforces a minimum of 80% line coverage. Buildkite publishes the
+JaCoCo XML report to SonarCloud after the snapshot build. Release builds use the stable
+logging artefact and generate signed binary, source, Javadoc and POM artefacts:
+
+```shell
+mvn clean deploy -Prelease
+```
+
+The release build requires the MapsMessaging GPG key and Central publishing credentials.
+
+## Diagnostics
+
+The library uses `simple_logging` and the `CotLogMessages` event enum. It records schema
+loading, validation rejection, malformed events, oversized events and stream
+resynchronisation. Tactical XML payloads are never written to the log by the library.
 
 ## Schema provenance
 
