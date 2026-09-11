@@ -14,4 +14,4 @@ steps:
       BUILDKITE_ANALYTICS_TOKEN: "$(buildkite-agent secret get SchemasBuildkiteAnalytics)"
       SONAR_TOKEN: "${SONAR_TOKEN}"
     agents:
-      queue: "java_build_queue"
+      queue: "java_build_queue-aws"
