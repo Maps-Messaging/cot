@@ -12,4 +12,4 @@ steps:
           files: "target/surefire-reports/*.xml"
           format: "junit"
     agents:
-      queue: "java_build_queue-aws"
+      queue: "java_build_queue_aws"
