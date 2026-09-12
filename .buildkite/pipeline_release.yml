@@ -1,5 +1,7 @@
 steps:
   - label: ":maven: Build and Deploy"
+    checkout:
+      ssh_secret: "GITHUB_SSH_KEY"
     command:
       - java -version
       - mvn clean deploy -Prelease

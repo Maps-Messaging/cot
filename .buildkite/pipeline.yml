@@ -1,5 +1,7 @@
 steps:
   - label: ":maven: Build and Deploy"
+    checkout:
+      ssh_secret: "GITHUB_SSH_KEY"
     command:
       - export SONAR_TOKEN=$(buildkite-agent secret get SONAR_TOKEN)
       - export NVD_API_KEY=$(buildkite-agent secret get nvd_api_key)
